@@ -1,7 +1,494 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ChatConnect | Real-Time Messaging</title><link rel="stylesheet" href="style.css"><script src="/socket.io/socket.io.js"></script></head>
-<body><main class="app-shell">
-<section id="authView" class="auth-view"><div class="brand"><span class="brand-mark">C</span><div><h1>ChatConnect</h1><p>Real-time messaging platform</p></div></div><div class="auth-card"><h2 id="authTitle">Welcome back</h2><p class="muted" id="authSubtitle">Sign in to continue your conversations.</p><form id="authForm"><div id="usernameField" class="field hidden"><label>Username</label><input id="username" placeholder="3–20 letters, numbers or _" autocomplete="username"></div><div class="field"><label>Email (register) / Username or email (login)</label><input id="identifier" type="text" placeholder="Username or email" autocomplete="username" required></div><div class="field"><label>Password</label><input id="password" type="password" minlength="8" autocomplete="current-password" required></div><button class="primary full" id="authSubmit">Sign in</button><p id="authError" class="error"></p></form><p class="switch-text"><span id="switchLabel">New to ChatConnect?</span> <button class="link" id="switchAuth">Create account</button></p></div><p class="auth-foot">Private conversations · Instant delivery</p></section>
-<section id="chatView" class="chat-view hidden"><aside class="sidebar"><div class="brand compact"><span class="brand-mark">C</span><div><h1>ChatConnect</h1><p>Messages</p></div></div><div class="me-card"><div class="avatar" id="myAvatar">D</div><div><strong id="myName">User</strong><small class="online-label">● Online</small></div><button id="logout" class="icon-btn" title="Sign out">↗</button></div><div class="side-heading">CONTACTS <span id="userCount">0</span></div><input id="searchUsers" class="search" placeholder="Search people…"><div id="usersList" class="users-list"></div><div class="sidebar-bottom"><button id="showProtocols" class="secondary full">Networking Protocol Lab</button><small>CN + FLA learning project</small></div></aside>
-<section class="conversation"><div id="emptyChat" class="empty-chat"><div class="empty-icon">✉</div><h2>Your conversations</h2><p>Select someone from your contacts to start messaging.</p></div><div id="activeChat" class="active-chat hidden"><header class="chat-header"><div class="avatar" id="peerAvatar">U</div><div><strong id="peerName">Contact</strong><small id="peerStatus">Offline</small></div><div class="header-tag">Private chat</div></header><div id="messages" class="messages"></div><form id="messageForm" class="composer"><input id="messageInput" maxlength="2000" placeholder="Write a message…" autocomplete="off"><button class="primary send-btn" type="submit">Send <span>↗</span></button></form></div><section id="protocolPanel" class="protocol-panel hidden"><header><button id="backChat" class="link">← Back to chat</button><h2>Networking Protocol Lab</h2><p>Concepts and connection tests used in this project.</p></header><div class="protocol-grid"><article><h3>TCP / HTTP / WebSocket</h3><p>TCP provides transport; REST APIs use HTTP; Socket.IO carries real-time events.</p><span class="status-pill implemented">Implemented</span></article><article><h3>SMTP + MIME</h3><p>SMTP sends email notifications. MIME formats text/HTML email content.</p><button class="secondary" id="smtpTest">Test SMTP connection</button><span id="smtpResult" class="result"></span></article><article><h3>POP3</h3><p>POP3 mailbox retrieval demo. Configure POP3 variables in your .env file.</p><button class="secondary" id="pop3Test">Run POP3 demo</button><span id="pop3Result" class="result"></span></article><article><h3>IMAP</h3><p>IMAP inbox access and mailbox metadata demo. Configure IMAP variables in .env.</p><button class="secondary" id="imapTest">Run IMAP demo</button><span id="imapResult" class="result"></span></article><article><h3>FLA: Regular Language</h3><p>Username rule: 3–20 characters, letters, digits and underscore.</p><div class="inline-form"><input id="flaUsername" placeholder="Try: user_123"><button class="secondary" id="flaCheck">Validate</button></div><span id="flaResult" class="result"></span></article><article><h3>FLA: Finite State Machine</h3><p>Message lifecycle: Pending → Sent → Read. Invalid transitions are rejected by the server.</p><div class="state-flow"><span>Pending</span><b>→</b><span>Sent</span><b>→</b><span>Read</span></div><span class="status-pill implemented">Server state transitions</span></article></div><div class="lab-note">Email protocol tests require the corresponding mail provider settings and credentials in your local environment. Never share your .env file.</div></section></section></section>
-</main><div id="toast" class="toast"></div><script src="script.js"></script></body></html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>ChatConnect | Real-Time Messaging</title>
+
+    <link rel="stylesheet" href="style.css">
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+
+<body>
+
+    <main class="app-shell">
+
+        <!-- ================= AUTH VIEW ================= -->
+
+        <section id="authView" class="auth-view">
+
+            <div class="brand">
+                <span class="brand-mark">C</span>
+
+                <div>
+                    <h1>ChatConnect</h1>
+                    <p>Real-time messaging platform</p>
+                </div>
+            </div>
+
+            <div class="auth-card">
+
+                <h2 id="authTitle">Welcome back</h2>
+
+                <p class="muted" id="authSubtitle">
+                    Sign in to continue your conversations.
+                </p>
+
+                <form id="authForm">
+
+                    <div id="usernameField" class="field hidden">
+                        <label>Username</label>
+
+                        <input id="username" placeholder="3–20 letters, numbers or _" autocomplete="username">
+                    </div>
+
+                    <div class="field">
+                        <label>
+                            Email (register) / Username or email (login)
+                        </label>
+
+                        <input id="identifier" type="text" placeholder="Username or email" autocomplete="username"
+                            required>
+                    </div>
+
+                    <div class="field">
+                        <label>Password</label>
+
+                        <input id="password" type="password" minlength="8" autocomplete="current-password" required>
+                    </div>
+
+                    <button class="primary full" id="authSubmit">
+                        Sign in
+                    </button>
+
+                    <p id="authError" class="error"></p>
+
+                </form>
+
+                <p class="switch-text">
+                    <span id="switchLabel">New to ChatConnect?</span>
+
+                    <button class="link" id="switchAuth">
+                        Create account
+                    </button>
+                </p>
+
+            </div>
+
+            <p class="auth-foot">
+                Private conversations · Instant delivery
+            </p>
+
+        </section>
+
+
+        <!-- ================= CHAT VIEW ================= -->
+
+        <section id="chatView" class="chat-view hidden">
+
+            <!-- SIDEBAR -->
+
+            <aside class="sidebar">
+
+                <div class="brand compact">
+
+                    <span class="brand-mark">C</span>
+
+                    <div>
+                        <h1>ChatConnect</h1>
+                        <p>Messages</p>
+                    </div>
+
+                </div>
+
+
+                <!-- CURRENT USER -->
+
+                <div class="me-card">
+
+                    <div class="avatar" id="myAvatar">D</div>
+
+                    <div>
+                        <strong id="myName">User</strong>
+                        <small class="online-label">● Online</small>
+                    </div>
+
+                    <button id="logout" class="icon-btn" title="Sign out">
+                        ↗
+                    </button>
+
+                </div>
+
+
+                <!-- CONTACTS -->
+
+                <div class="side-heading">
+                    CONTACTS
+                    <span id="userCount">0</span>
+                </div>
+
+                <input id="searchUsers" class="search" placeholder="Search people…">
+
+                <div id="usersList" class="users-list"></div>
+
+
+                <!-- PROTOCOL LAB -->
+
+                <div class="sidebar-bottom">
+
+                    <button id="showProtocols" class="secondary full">
+                        Networking Protocol Lab
+                    </button>
+
+                    <small>CN + FLA learning project</small>
+
+                </div>
+
+            </aside>
+
+
+            <!-- CONVERSATION AREA -->
+
+            <section class="conversation">
+
+
+                <!-- EMPTY CHAT -->
+
+                <div id="emptyChat" class="empty-chat">
+
+                    <div class="empty-icon">✉</div>
+
+                    <h2>Your conversations</h2>
+
+                    <p>
+                        Select someone from your contacts
+                        to start messaging.
+                    </p>
+
+                </div>
+
+
+                <!-- ACTIVE CHAT -->
+
+                <div id="activeChat" class="active-chat hidden">
+
+
+                    <!-- CHAT HEADER -->
+
+                    <header class="chat-header">
+
+                        <div class="avatar" id="peerAvatar">U</div>
+
+                        <div class="chat-peer-info">
+
+                            <strong id="peerName">Contact</strong>
+
+                            <small id="peerStatus">Offline</small>
+
+                            <!-- Typing indicator -->
+                            <small id="typingIndicator" class="typing-indicator hidden">
+                                Typing...
+                            </small>
+
+                        </div>
+
+                        <div class="header-actions">
+
+                            <!-- Unread / notification indicator -->
+                            <button id="notificationButton" class="icon-btn" title="Notifications">
+                                🔔
+                                <span id="notificationBadge" class="notification-badge hidden">
+                                    0
+                                </span>
+                            </button>
+
+                            <div class="header-tag">
+                                Private chat
+                            </div>
+
+                        </div>
+
+                    </header>
+
+
+                    <!-- MESSAGES -->
+
+                    <div id="messages" class="messages"></div>
+
+
+                    <!-- ATTACHMENT PREVIEW -->
+                    <div id="replyPreview" class="reply-preview hidden"></div>
+
+                    <div id="attachmentPreview" class="attachment-preview hidden"></div>
+
+
+                    <!-- MESSAGE COMPOSER -->
+
+                    <form id="messageForm" class="composer">
+
+
+                        <!-- ATTACHMENT BUTTON -->
+
+                        <button type="button" id="attachmentButton" class="icon-btn attachment-btn"
+                            title="Attach image or file">
+                            📎
+                        </button>
+
+
+                        <!-- FILE INPUT -->
+
+                        <input type="file" id="fileInput" class="hidden"
+                            accept="image/*,.pdf,.doc,.docx,.txt,.ppt,.pptx,.xls,.xlsx,.zip">
+
+
+                        <!-- EMOJI BUTTON -->
+
+                        <button type="button" id="emojiButton" class="icon-btn emoji-btn" title="Select emoji">
+                            😊
+                        </button>
+
+
+                        <!-- EMOJI PICKER -->
+
+                        <div id="emojiPicker" class="emoji-picker hidden">
+
+                            <div class="emoji-list">
+
+                                <button type="button" class="emoji-item">😀</button>
+                                <button type="button" class="emoji-item">😁</button>
+                                <button type="button" class="emoji-item">😂</button>
+                                <button type="button" class="emoji-item">🤣</button>
+                                <button type="button" class="emoji-item">😊</button>
+                                <button type="button" class="emoji-item">😍</button>
+                                <button type="button" class="emoji-item">🥰</button>
+                                <button type="button" class="emoji-item">😘</button>
+                                <button type="button" class="emoji-item">😎</button>
+                                <button type="button" class="emoji-item">🤔</button>
+                                <button type="button" class="emoji-item">😭</button>
+                                <button type="button" class="emoji-item">😢</button>
+                                <button type="button" class="emoji-item">😡</button>
+                                <button type="button" class="emoji-item">😴</button>
+                                <button type="button" class="emoji-item">🥳</button>
+                                <button type="button" class="emoji-item">❤️</button>
+                                <button type="button" class="emoji-item">💖</button>
+                                <button type="button" class="emoji-item">💕</button>
+                                <button type="button" class="emoji-item">👍</button>
+                                <button type="button" class="emoji-item">👎</button>
+                                <button type="button" class="emoji-item">👏</button>
+                                <button type="button" class="emoji-item">🙏</button>
+                                <button type="button" class="emoji-item">🔥</button>
+                                <button type="button" class="emoji-item">🎉</button>
+                                <button type="button" class="emoji-item">💯</button>
+                                <button type="button" class="emoji-item">✨</button>
+                                <button type="button" class="emoji-item">🌸</button>
+                                <button type="button" class="emoji-item">❤️‍🔥</button>
+
+                            </div>
+
+                        </div>
+
+
+                        <!-- MESSAGE INPUT -->
+
+                        <input id="messageInput" maxlength="2000" placeholder="Write a message…" autocomplete="off">
+
+
+                        <!-- SEND BUTTON -->
+
+                        <button class="primary send-btn" type="submit">
+                            Send <span>↗</span>
+                        </button>
+
+                    </form>
+
+                </div>
+
+
+                <!-- ================= PROTOCOL PANEL ================= -->
+
+                <section id="protocolPanel" class="protocol-panel hidden">
+
+                    <header>
+
+                        <button id="backChat" class="link">
+                            ← Back to chat
+                        </button>
+
+                        <h2>Networking Protocol Lab</h2>
+
+                        <p>
+                            Concepts and connection tests used in this project.
+                        </p>
+
+                    </header>
+
+
+                    <div class="protocol-grid">
+
+
+                        <!-- TCP / HTTP / WEBSOCKET -->
+
+                        <article>
+
+                            <h3>TCP / HTTP / WebSocket</h3>
+
+                            <p>
+                                TCP provides transport; REST APIs use HTTP;
+                                Socket.IO carries real-time events.
+                            </p>
+
+                            <span class="status-pill implemented">
+                                Implemented
+                            </span>
+
+                        </article>
+
+
+                        <!-- SMTP -->
+
+                        <article>
+
+                            <h3>SMTP + MIME</h3>
+
+                            <p>
+                                SMTP sends email notifications.
+                                MIME formats text/HTML email content.
+                            </p>
+
+                            <button class="secondary" id="smtpTest">
+                                Test SMTP connection
+                            </button>
+
+                            <span id="smtpResult" class="result"></span>
+
+                        </article>
+
+
+                        <!-- POP3 -->
+
+                        <article>
+
+                            <h3>POP3</h3>
+
+                            <p>
+                                POP3 mailbox retrieval demo.
+                                Configure POP3 variables in your .env file.
+                            </p>
+
+                            <button class="secondary" id="pop3Test">
+                                Run POP3 demo
+                            </button>
+
+                            <span id="pop3Result" class="result"></span>
+
+                        </article>
+
+
+                        <!-- IMAP -->
+
+                        <article>
+
+                            <h3>IMAP</h3>
+
+                            <p>
+                                IMAP inbox access and mailbox metadata demo.
+                                Configure IMAP variables in .env.
+                            </p>
+
+                            <button class="secondary" id="imapTest">
+                                Run IMAP demo
+                            </button>
+
+                            <span id="imapResult" class="result"></span>
+
+                        </article>
+
+
+                        <!-- FLA REGEX -->
+
+                        <article>
+
+                            <h3>FLA: Regular Language</h3>
+
+                            <p>
+                                Username rule: 3–20 characters,
+                                letters, digits and underscore.
+                            </p>
+
+                            <div class="inline-form">
+
+                                <input id="flaUsername" placeholder="Try: user_123">
+
+                                <button class="secondary" id="flaCheck">
+                                    Validate
+                                </button>
+
+                            </div>
+
+                            <span id="flaResult" class="result"></span>
+
+                        </article>
+
+
+                        <!-- FLA FSM -->
+
+                        <article>
+
+                            <h3>FLA: Finite State Machine</h3>
+
+                            <p>
+                                Message lifecycle:
+                                Pending → Sent → Read.
+                                Invalid transitions are rejected by the server.
+                            </p>
+
+                            <div class="state-flow">
+
+                                <span>Pending</span>
+                                <b>→</b>
+                                <span>Sent</span>
+                                <b>→</b>
+                                <span>Read</span>
+
+                            </div>
+
+                            <span class="status-pill implemented">
+                                Server state transitions
+                            </span>
+
+                        </article>
+
+                    </div>
+
+
+                    <div class="lab-note">
+
+                        Email protocol tests require the corresponding
+                        mail provider settings and credentials in your
+                        local environment. Never share your .env file.
+
+                    </div>
+
+                </section>
+
+            </section>
+
+        </section>
+
+    </main>
+
+
+    <!-- TOAST MESSAGE -->
+
+    <div id="toast" class="toast"></div>
+
+
+    <!-- FRONTEND SCRIPT -->
+
+    <script src="script.js"></script>
+
+</body>
+
+</html>

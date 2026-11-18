@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 
 const express = require('express');
@@ -6,6 +7,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
+const multer = require('multer');
 
 const User = require('./models/User');
 const Message = require('./models/Message');
@@ -30,6 +32,16 @@ if (!JWT_SECRET) {
 // Regular Expressions
 const usernameRegex = /^[a-zA-Z0-9_]{3,20}$/;
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// File Upload Configuration
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 10 * 1024 * 1024
+    }
+});
+
+let gridFSBucket;
 
 // Generate JWT Token
 function tokenFor(user) {
@@ -70,6 +82,27 @@ async function auth(req, res, next) {
             error: 'Invalid or expired token'
         });
     }
+}
+
+// Validate ObjectId
+function validId(id) {
+    return mongoose.isValidObjectId(id);
+}
+
+// Check whether two users belong to a conversation
+function conversationQuery(userId, otherId) {
+    return {
+        $or: [
+            {
+                sender: userId,
+                receiver: otherId
+            },
+            {
+                sender: otherId,
+                receiver: userId
+            }
+        ]
+    };
 }
 
 // Health Check
@@ -216,48 +249,439 @@ app.get('/api/users', auth, async (req, res) => {
     }
 });
 
+// Recent Chats + Last Message + Unread Count
+app.get('/api/chats', auth, async (req, res) => {
+    try {
+        const userId = req.user._id;
+
+        const messages = await Message.find({
+            $or: [
+                { sender: userId },
+                { receiver: userId }
+            ],
+            deletedForEveryone: { $ne: true },
+            deletedFor: { $ne: userId }
+        }).sort({ createdAt: -1 });
+
+        const chatMap = new Map();
+
+        for (const message of messages) {
+            const otherId = String(message.sender) === String(userId)
+                ? String(message.receiver)
+                : String(message.sender);
+
+            if (!chatMap.has(otherId)) {
+                chatMap.set(otherId, {
+                    userId: otherId,
+                    lastMessage: message,
+                    unreadCount: 0,
+                    lastMessageAt: message.createdAt
+                });
+            }
+
+            if (
+                String(message.receiver) === String(userId) &&
+                message.status !== 'read'
+            ) {
+                chatMap.get(otherId).unreadCount++;
+            }
+        }
+
+        const chatIds = [...chatMap.keys()];
+
+        const chatUsers = await User.find({
+            _id: { $in: chatIds }
+        }).select('username online lastSeen');
+
+        const result = chatUsers.map(user => {
+            const chat = chatMap.get(String(user._id));
+
+            return {
+                user,
+                lastMessage: chat.lastMessage,
+                unreadCount: chat.unreadCount,
+                lastMessageAt: chat.lastMessageAt
+            };
+        }).sort((a, b) =>
+            new Date(b.lastMessageAt) - new Date(a.lastMessageAt)
+        );
+
+        res.json(result);
+
+    } catch (e) {
+        console.error('Recent chats error:', e.message);
+
+        res.status(500).json({
+            error: 'Unable to load recent chats.'
+        });
+    }
+});
+
 // Message History
 app.get('/api/messages/:userId', auth, async (req, res) => {
     try {
         const other = req.params.userId;
 
+        if (!validId(other)) {
+            return res.status(400).json({
+                error: 'Invalid user ID.'
+            });
+        }
+
         const msgs = await Message.find({
-            $or: [
-                {
-                    sender: req.user._id,
-                    receiver: other
-                },
-                {
-                    sender: other,
-                    receiver: req.user._id
-                }
-            ]
+            ...conversationQuery(req.user._id, other),
+            deletedForEveryone: { $ne: true },
+            deletedFor: { $ne: req.user._id }
         })
             .sort({ createdAt: 1 })
             .limit(300);
 
-        await Message.updateMany(
-            {
-                sender: other,
-                receiver: req.user._id,
-                status: { $ne: 'read' }
-            },
-            {
-                $set: { status: 'read' },
-                $push: {
-                    statusHistory: {
-                        status: 'read',
-                        at: new Date()
-                    }
-                }
-            }
-        );
+        // FSM: Sent -> Read
+        const unread = await Message.find({
+            sender: other,
+            receiver: req.user._id,
+            status: 'sent'
+        });
+
+        for (const message of unread) {
+            transitionStatus(message, 'read');
+        }
+
+        if (unread.length) {
+            await Message.bulkSave(unread);
+
+            io.to(String(other)).emit('messages-read', {
+                reader: String(req.user._id),
+                ids: unread.map(m => m._id)
+            });
+        }
 
         res.json(msgs);
 
-    } catch {
+    } catch (e) {
+        console.error('Message history error:', e.message);
+
         res.status(400).json({
             error: 'Unable to load messages.'
+        });
+    }
+});
+
+// Upload Image / File
+app.post(
+    '/api/upload/:receiverId',
+    auth,
+    upload.single('file'),
+    async (req, res) => {
+        try {
+            const receiver = req.params.receiverId;
+
+            if (!validId(receiver) || receiver === String(req.user._id)) {
+                return res.status(400).json({
+                    error: 'Invalid recipient.'
+                });
+            }
+
+            const recipient = await User.findById(receiver);
+
+            if (!recipient) {
+                return res.status(404).json({
+                    error: 'Recipient not found.'
+                });
+            }
+
+            if (!req.file) {
+                return res.status(400).json({
+                    error: 'Choose a file to upload.'
+                });
+            }
+
+            if (!gridFSBucket) {
+                return res.status(503).json({
+                    error: 'File storage is not ready.'
+                });
+            }
+
+            const allowedTypes = [
+                'image/jpeg',
+                'image/png',
+                'image/gif',
+                'image/webp',
+                'application/pdf',
+                'text/plain',
+                'application/msword',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'application/vnd.ms-excel',
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'application/vnd.ms-powerpoint',
+                'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+            ];
+
+            if (!allowedTypes.includes(req.file.mimetype)) {
+                return res.status(400).json({
+                    error: 'This file type is not supported.'
+                });
+            }
+
+            const fileId = new mongoose.Types.ObjectId();
+
+            const stream = gridFSBucket.openUploadStreamWithId(
+                fileId,
+                req.file.originalname,
+                {
+                    contentType: req.file.mimetype,
+                    metadata: {
+                        uploadedBy: String(req.user._id),
+                        receiver: String(receiver)
+                    }
+                }
+            );
+
+            stream.end(req.file.buffer);
+
+            await new Promise((resolve, reject) => {
+                stream.on('finish', resolve);
+                stream.on('error', reject);
+            });
+
+            const isImage = req.file.mimetype.startsWith('image/');
+
+            const message = await Message.create({
+                sender: req.user._id,
+                receiver,
+                text: '',
+                attachment: {
+                    url: `/api/files/${fileId}`,
+                    originalName: req.file.originalname,
+                    mimeType: req.file.mimetype,
+                    size: req.file.size,
+                    type: isImage ? 'image' : 'file'
+                },
+                status: 'sent',
+                statusHistory: [
+                    { status: 'pending' },
+                    { status: 'sent' }
+                ]
+            });
+
+            const payload = {
+                _id: message._id,
+                sender: String(req.user._id),
+                receiver,
+                text: '',
+                attachment: message.attachment,
+                status: message.status,
+                createdAt: message.createdAt
+            };
+
+            io.to(receiver).emit('private-message', payload);
+            io.to(String(req.user._id)).emit('private-message', payload);
+
+            res.status(201).json({
+                ok: true,
+                message: payload
+            });
+
+        } catch (e) {
+            console.error('Upload error:', e.message);
+
+            res.status(500).json({
+                error: 'File upload failed.'
+            });
+        }
+    }
+);
+
+// Download / View File
+app.get('/api/files/:fileId', auth, async (req, res) => {
+    try {
+        if (!validId(req.params.fileId) || !gridFSBucket) {
+            return res.status(404).json({
+                error: 'File not found.'
+            });
+        }
+
+        const fileId = new mongoose.Types.ObjectId(req.params.fileId);
+
+        const files = await mongoose.connection.db
+            .collection('uploads.files')
+            .find({ _id: fileId })
+            .toArray();
+
+        if (!files.length) {
+            return res.status(404).json({
+                error: 'File not found.'
+            });
+        }
+
+        const file = files[0];
+        const owner = file.metadata?.uploadedBy;
+        const receiver = file.metadata?.receiver;
+
+        if (
+            String(req.user._id) !== owner &&
+            String(req.user._id) !== receiver
+        ) {
+            return res.status(403).json({
+                error: 'You cannot access this file.'
+            });
+        }
+
+        res.setHeader(
+            'Content-Type',
+            file.contentType || 'application/octet-stream'
+        );
+
+        res.setHeader(
+            'Content-Disposition',
+            `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`
+        );
+
+        gridFSBucket.openDownloadStream(fileId).pipe(res);
+
+    } catch (e) {
+        console.error('File download error:', e.message);
+
+        res.status(500).json({
+            error: 'Unable to download file.'
+        });
+    }
+});
+
+// Edit Message
+app.patch('/api/messages/:messageId', auth, async (req, res) => {
+    try {
+        const messageId = req.params.messageId;
+        const text = String(req.body.text || '').trim();
+
+        if (!validId(messageId)) {
+            return res.status(400).json({
+                error: 'Invalid message ID.'
+            });
+        }
+
+        if (!text || text.length > 2000) {
+            return res.status(400).json({
+                error: 'Message must contain 1–2000 characters.'
+            });
+        }
+
+        const message = await Message.findOne({
+            _id: messageId,
+            sender: req.user._id,
+            deletedForEveryone: { $ne: true }
+        });
+
+        if (!message) {
+            return res.status(404).json({
+                error: 'Message not found or you cannot edit it.'
+            });
+        }
+
+        message.text = text;
+        message.editedAt = new Date();
+
+        await message.save();
+
+        const payload = {
+            _id: message._id,
+            text: message.text,
+            editedAt: message.editedAt
+        };
+
+        io.to(String(message.receiver)).emit('message-updated', payload);
+        io.to(String(message.sender)).emit('message-updated', payload);
+
+        res.json({
+            ok: true,
+            message
+        });
+
+    } catch (e) {
+        console.error('Edit message error:', e.message);
+
+        res.status(500).json({
+            error: 'Unable to edit message.'
+        });
+    }
+});
+
+// Delete Message
+app.delete('/api/messages/:messageId', auth, async (req, res) => {
+    try {
+        const messageId = req.params.messageId;
+        const mode = req.query.mode || 'me';
+
+        if (!validId(messageId)) {
+            return res.status(400).json({
+                error: 'Invalid message ID.'
+            });
+        }
+
+        const message = await Message.findOne({
+            _id: messageId,
+            $or: [
+                { sender: req.user._id },
+                { receiver: req.user._id }
+            ]
+        });
+
+        if (!message) {
+            return res.status(404).json({
+                error: 'Message not found.'
+            });
+        }
+
+        if (mode === 'everyone') {
+            if (String(message.sender) !== String(req.user._id)) {
+                return res.status(403).json({
+                    error: 'Only the sender can delete this message for everyone.'
+                });
+            }
+
+            message.deletedForEveryone = true;
+            message.deletedAt = new Date();
+
+            await message.save();
+
+            const payload = {
+                messageId: String(message._id),
+                deletedForEveryone: true
+            };
+
+            io.to(String(message.sender)).emit('message-deleted', payload);
+            io.to(String(message.receiver)).emit('message-deleted', payload);
+
+        } else if (mode === 'me') {
+            if (!message.deletedFor.some(
+                id => String(id) === String(req.user._id)
+            )) {
+                message.deletedFor.push(req.user._id);
+            }
+
+            await message.save();
+
+            io.to(String(req.user._id)).emit('message-deleted', {
+                messageId: String(message._id),
+                deletedForMe: true
+            });
+
+        } else {
+            return res.status(400).json({
+                error: 'Invalid delete mode.'
+            });
+        }
+
+        res.json({
+            ok: true,
+            message: 'Message deleted.'
+        });
+
+    } catch (e) {
+        console.error('Delete message error:', e.message);
+
+        res.status(500).json({
+            error: 'Unable to delete message.'
         });
     }
 });
@@ -363,6 +787,8 @@ app.post('/api/fla/validate-username', auth, (req, res) => {
 });
 
 // Finite State Machine
+// Existing FSM is preserved:
+// Pending -> Sent -> Read
 const allowedTransitions = {
     pending: ['sent'],
     sent: ['read'],
@@ -422,14 +848,15 @@ io.on('connection', async (socket) => {
         online: true
     });
 
-    // PRIVATE MESSAGE + EMAIL NOTIFICATION
+    // PRIVATE MESSAGE + REPLY + EMAIL NOTIFICATION
     socket.on('private-message', async (data, ack = () => { }) => {
         try {
             const receiver = String(data?.receiver || '');
             const text = String(data?.text || '').trim();
+            const replyTo = data?.replyTo || null;
 
             if (
-                !mongoose.isValidObjectId(receiver) ||
+                !validId(receiver) ||
                 receiver === uid
             ) {
                 return ack({
@@ -445,11 +872,42 @@ io.on('connection', async (socket) => {
                 });
             }
 
-            // Save message in MongoDB
+            if (replyTo && !validId(replyTo)) {
+                return ack({
+                    ok: false,
+                    error: 'Invalid reply message.'
+                });
+            }
+
+            if (replyTo) {
+                const original = await Message.findOne({
+                    _id: replyTo,
+                    ...conversationQuery(uid, receiver),
+                    deletedForEveryone: { $ne: true }
+                });
+
+                if (!original) {
+                    return ack({
+                        ok: false,
+                        error: 'Original message not found.'
+                    });
+                }
+            }
+
+            const recipient = await User.findById(receiver);
+
+            if (!recipient) {
+                return ack({
+                    ok: false,
+                    error: 'Recipient not found.'
+                });
+            }
+
             const message = await Message.create({
                 sender: uid,
                 receiver,
                 text,
+                replyTo,
                 status: 'pending',
                 statusHistory: [
                     { status: 'pending' }
@@ -466,42 +924,25 @@ io.on('connection', async (socket) => {
                 sender: uid,
                 receiver,
                 text,
+                replyTo: message.replyTo,
                 status: message.status,
                 statusHistory: message.statusHistory,
                 createdAt: message.createdAt
             };
 
-            // Deliver message to receiver
-            io.to(receiver).emit(
-                'private-message',
-                payload
-            );
+            io.to(receiver).emit('private-message', payload);
+            io.to(uid).emit('private-message', payload);
 
-            // Show message to sender
-            io.to(uid).emit(
-                'private-message',
-                payload
-            );
-
-            // Confirm message delivery to client
             ack({
                 ok: true,
                 message: payload
             });
 
-            // Find receiver and sender email details
-            const recipient = await User.findById(receiver)
-                .select('email username');
-
+            // Email notification
             const sender = await User.findById(uid)
                 .select('username');
 
-            // Trigger email notification
-            if (
-                recipient &&
-                sender &&
-                recipient.email
-            ) {
+            if (recipient.email && sender) {
                 await sendNoticeSafely(
                     recipient.email,
                     sender.username
@@ -521,7 +962,7 @@ io.on('connection', async (socket) => {
     // Mark Messages as Read
     socket.on('mark-read', async ({ senderId } = {}) => {
         try {
-            if (!mongoose.isValidObjectId(senderId)) {
+            if (!validId(senderId)) {
                 return;
             }
 
@@ -539,7 +980,7 @@ io.on('connection', async (socket) => {
                 await Message.bulkSave(unread);
             }
 
-            io.to(senderId).emit('messages-read', {
+            io.to(String(senderId)).emit('messages-read', {
                 reader: uid,
                 ids: unread.map(m => m._id)
             });
@@ -549,7 +990,32 @@ io.on('connection', async (socket) => {
         }
     });
 
-    // Disconnect
+    // Message Delivered Notification
+    socket.on('message-delivered', async ({ messageId } = {}) => {
+        try {
+            if (!validId(messageId)) return;
+
+            const message = await Message.findOne({
+                _id: messageId,
+                receiver: uid
+            });
+
+            if (!message) return;
+
+            message.deliveredAt = new Date();
+            await message.save();
+
+            io.to(String(message.sender)).emit('message-delivered', {
+                messageId: String(message._id),
+                deliveredAt: message.deliveredAt
+            });
+
+        } catch (e) {
+            console.error('Delivery status error:', e.message);
+        }
+    });
+
+    // Receive Message Update Events
     socket.on('disconnect', async () => {
         const count = Math.max(
             0,
@@ -610,6 +1076,14 @@ async function sendNoticeSafely(to, sender) {
 app.use((err, req, res, next) => {
     console.error(err);
 
+    if (err instanceof multer.MulterError) {
+        return res.status(400).json({
+            error: err.code === 'LIMIT_FILE_SIZE'
+                ? 'File size must be 10 MB or less.'
+                : 'File upload error.'
+        });
+    }
+
     res.status(500).json({
         error: 'Server error.'
     });
@@ -624,9 +1098,20 @@ async function start() {
         process.exit(1);
     }
 
+    if (!JWT_SECRET) {
+        console.error('JWT_SECRET is required.');
+        process.exit(1);
+    }
+
     await mongoose.connect(process.env.MONGO_URI);
 
+    gridFSBucket = new mongoose.mongo.GridFSBucket(
+        mongoose.connection.db,
+        { bucketName: 'uploads' }
+    );
+
     console.log('MongoDB connected');
+    console.log('GridFS file storage initialized');
 
     server.listen(PORT, () => {
         console.log(`ChatConnect running on port ${PORT}`);
